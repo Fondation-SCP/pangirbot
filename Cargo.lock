@@ -365,6 +365,7 @@ dependencies = [
  "secrecy",
  "tracing",
  "ureq",
+ "zeroize",
 ]
 
 [[package]]
