@@ -14,6 +14,13 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     read_env_file()?;
+    let username = match std::env::var("WIKIDOT_USERNAME") {
+        Err(error) => {
+            event!(Level::ERROR, %error);
+            return Err(error.into());
+        }
+        Ok(username) => username,
+    };
     let password = read_pw_file()?;
 
     Ok(())
