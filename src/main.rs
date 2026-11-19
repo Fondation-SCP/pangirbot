@@ -1,8 +1,10 @@
 use std::{
     fs::{File, Metadata},
     io::Read,
+    path::PathBuf,
 };
 
+use clap::{Parser, Subcommand};
 use scraper::{Html, Selector};
 use secrecy::{ExposeSecret, SecretString};
 use thiserror::Error;
@@ -10,10 +12,32 @@ use tracing::{event, instrument, Level};
 use ureq::{http::Response, Body};
 use zeroize::Zeroizing;
 
+mod actions;
+
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+#[derive(Parser)]
+struct Cli {
+    /// The Wikidot site where the action must be performed (e.g. `scp-wiki`).
+    site: String,
+    /// The action to be performed.
+    #[command(subcommand)]
+    action: Action,
+}
+
+#[derive(Subcommand)]
+enum Action {
+    Replace {
+        /// The path to the file containing the slugs of the pages whose contents must be replaced (one slug per line inside the file).
+        page_list_file: PathBuf,
+        /// The path to the file containing the new contents for those pages.
+        content_file: PathBuf,
+    },
+}
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
+    let args = Cli::parse();
 
     read_env_file()?;
     let username = read_username()?;
@@ -36,6 +60,15 @@ fn main() -> Result<()> {
         let error = AuthError::WrongPassword;
         event!(Level::ERROR, %error);
         return Err(error.into());
+    }
+
+    event!(Level::INFO, "connection succeeded");
+
+    match args.action {
+        Action::Replace {
+            page_list_file,
+            content_file,
+        } => actions::replace(&args.site, &page_list_file, &content_file)?,
     }
 
     Ok(())
