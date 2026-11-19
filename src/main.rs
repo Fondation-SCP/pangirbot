@@ -3,9 +3,11 @@ use std::{
     io::Read,
 };
 
-use secrecy::SecretString;
+use scraper::{Html, Selector};
+use secrecy::{ExposeSecret, SecretString};
 use thiserror::Error;
 use tracing::{event, instrument, Level};
+use ureq::{http::Response, Body};
 use zeroize::Zeroizing;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -17,7 +19,32 @@ fn main() -> Result<()> {
     let username = read_username()?;
     let password = read_pw_file()?;
 
+    let auth_response = auth(&username, &password)?;
+    let auth_response_body_str = read_body(auth_response.into_body())?;
+    let auth_response_body = Html::parse_document(&auth_response_body_str);
+
+    let auth_err_selector = Selector::parse("h2.title.error.alert.alert-danger")
+        .expect("the auth error CSS selector should be valid");
+    if auth_response_body
+        .select(&auth_err_selector)
+        .find(|elem| {
+            elem.inner_html()
+                .contains("The login and password do not match.")
+        })
+        .is_some()
+    {
+        let error = AuthError::WrongPassword;
+        event!(Level::ERROR, %error);
+        return Err(error.into());
+    }
+
     Ok(())
+}
+
+#[derive(Error, Debug)]
+enum AuthError {
+    #[error("wrong password")]
+    WrongPassword,
 }
 
 #[instrument(err)]
@@ -80,4 +107,21 @@ fn check_pw_file_on_unix(metadata: &Metadata) -> Result<()> {
             Ok(())
         }
     }
+}
+
+#[instrument(err)]
+fn auth(username: &str, password: &SecretString) -> Result<Response<Body>> {
+    ureq::post("https://www.wikidot.com/default--flow/login__LoginPopupScreen")
+        .send_form([
+            ("login", username),
+            ("password", password.expose_secret()),
+            ("action", "Login2Action"),
+            ("event", "login"),
+        ])
+        .map_err(Into::into)
+}
+
+#[instrument(err)]
+fn read_body(mut body: Body) -> Result<String> {
+    body.read_to_string().map_err(Into::into)
 }
