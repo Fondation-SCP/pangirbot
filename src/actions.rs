@@ -28,6 +28,37 @@ pub fn replace(
         nonexistent,
     } = check_existence(site, page_slugs)?;
 
+    let info_msg = if create && !nonexistent.is_empty() {
+        format!(
+            "this action will edit {} pages and create {} more",
+            existent.len(),
+            nonexistent.len()
+        )
+    } else if !nonexistent.is_empty() {
+        format!(
+            "this action will edit {} pages. Among the mentioned pages, {} more do not exist yet, and will not be created",
+            existent.len(),
+            nonexistent.len()
+        )
+    } else {
+        format!("this action will edit {} pages", existent.len())
+    };
+    let mut prompt_msg = info_msg.clone();
+    if let Some(first) = prompt_msg.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    prompt_msg += &(if !create && !nonexistent.is_empty() {
+        ". Run this with the `--create` flag if you want to create them"
+    } else {
+        ""
+    }
+    .to_owned()
+        + ".\n\nRun this as is? [y/N]");
+    eprint!("{}", prompt_msg);
+    // TODO prompt the user
+
+    event!(Level::INFO, "{info_msg}");
+
     Ok(())
 }
 
