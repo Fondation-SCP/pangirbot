@@ -5,6 +5,7 @@ use std::{
     path::Path,
 };
 
+use indicatif::{ProgressIterator, ProgressStyle};
 use thiserror::Error;
 use tracing::{event, instrument, Level};
 use ureq::http::StatusCode;
@@ -125,7 +126,10 @@ fn check_existence(site: &str, page_slugs: HashSet<String>) -> crate::Result<Pag
     let mut existent = HashSet::new();
     let mut nonexistent = HashSet::new();
 
-    for slug in page_slugs {
+    for slug in page_slugs.into_iter().progress_with_style(
+        ProgressStyle::with_template("Checking which pages exist {wide_bar} {pos}/{len}")
+            .expect("the progress bar template should be valid"),
+    ) {
         let response = ureq::get(format!("https://{}.wikidot.com/{}", site, slug)).call();
         if let Err(ureq::Error::StatusCode(404)) = response {
             nonexistent.insert(slug);
