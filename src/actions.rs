@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     fs::File,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, IsTerminal},
     path::Path,
 };
 
@@ -15,12 +15,21 @@ enum ArgError {
     InvalidSlug(String),
 }
 
+#[derive(Error, Debug)]
+enum UserAborted {
+    #[error("the user aborted the execution")]
+    Manually,
+    #[error("no interactive tty and -y flag not provided")]
+    NoInteractiveTty,
+}
+
 #[instrument(err)]
 pub fn replace(
     site: &str,
     page_list_file_path: &Path,
     content_file_path: &Path,
     create: bool,
+    yes: bool,
 ) -> crate::Result<()> {
     let page_slugs = slugs_from_file(page_list_file_path)?;
     let PageExistenceBins {
@@ -43,19 +52,32 @@ pub fn replace(
     } else {
         format!("this action will edit {} pages", existent.len())
     };
-    let mut prompt_msg = info_msg.clone();
-    if let Some(first) = prompt_msg.get_mut(..1) {
-        first.make_ascii_uppercase();
+
+    if !yes {
+        let mut prompt_msg = info_msg.clone();
+        if let Some(first) = prompt_msg.get_mut(..1) {
+            first.make_ascii_uppercase();
+        }
+        prompt_msg += &(if !create && !nonexistent.is_empty() {
+            ". Run this with the `--create` flag if you want to create them"
+        } else {
+            ""
+        }
+        .to_owned()
+            + ".\n\nRun this as is? [y/N]");
+        eprint!("{}", prompt_msg);
+
+        let mut stdin = std::io::stdin().lock();
+        if stdin.is_terminal() {
+            let mut input = String::new();
+            stdin.read_line(&mut input)?;
+            if input.trim() != "y" {
+                return Err(UserAborted::Manually.into());
+            }
+        } else {
+            return Err(UserAborted::NoInteractiveTty.into());
+        }
     }
-    prompt_msg += &(if !create && !nonexistent.is_empty() {
-        ". Run this with the `--create` flag if you want to create them"
-    } else {
-        ""
-    }
-    .to_owned()
-        + ".\n\nRun this as is? [y/N]");
-    eprint!("{}", prompt_msg);
-    // TODO prompt the user
 
     event!(Level::INFO, "{info_msg}");
 

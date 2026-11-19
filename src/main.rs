@@ -23,6 +23,9 @@ struct Cli {
     /// The action to be performed.
     #[command(subcommand)]
     action: Action,
+    /// Always say 'yes' to confirmation prompts.
+    #[arg(short, long)]
+    yes: bool,
 }
 
 #[derive(Subcommand)]
@@ -72,7 +75,7 @@ fn main() -> Result<()> {
             page_list_file,
             content_file,
             create,
-        } => actions::replace(&args.site, &page_list_file, &content_file, create)?,
+        } => actions::replace(&args.site, &page_list_file, &content_file, create, args.yes)?,
     }
 
     Ok(())
