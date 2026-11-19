@@ -32,6 +32,9 @@ enum Action {
         page_list_file: PathBuf,
         /// The path to the file containing the new contents for those pages.
         content_file: PathBuf,
+        /// If nonexistent pages are mentioned to this action, it will not create them unless this flag is specified.
+        #[arg(long)]
+        create: bool,
     },
 }
 
@@ -68,7 +71,8 @@ fn main() -> Result<()> {
         Action::Replace {
             page_list_file,
             content_file,
-        } => actions::replace(&args.site, &page_list_file, &content_file)?,
+            create,
+        } => actions::replace(&args.site, &page_list_file, &content_file, create)?,
     }
 
     Ok(())

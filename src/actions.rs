@@ -20,6 +20,7 @@ pub fn replace(
     site: &str,
     page_list_file_path: &Path,
     content_file_path: &Path,
+    create: bool,
 ) -> crate::Result<()> {
     let page_slugs = slugs_from_file(page_list_file_path)?;
     let PageExistenceBins {
