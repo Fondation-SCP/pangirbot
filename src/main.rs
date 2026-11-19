@@ -14,13 +14,7 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     read_env_file()?;
-    let username = match std::env::var("WIKIDOT_USERNAME") {
-        Err(error) => {
-            event!(Level::ERROR, %error);
-            return Err(error.into());
-        }
-        Ok(username) => username,
-    };
+    let username = read_username()?;
     let password = read_pw_file()?;
 
     Ok(())
@@ -36,6 +30,11 @@ fn read_env_file() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[instrument(err)]
+fn read_username() -> Result<String> {
+    std::env::var("WIKIDOT_USERNAME").map_err(Into::into)
 }
 
 #[derive(Error, Debug)]
