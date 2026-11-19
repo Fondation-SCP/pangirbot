@@ -7,6 +7,7 @@ use std::{
 
 use thiserror::Error;
 use tracing::{event, instrument, Level};
+use ureq::http::StatusCode;
 
 #[derive(Error, Debug)]
 enum ArgError {
@@ -21,6 +22,10 @@ pub fn replace(
     content_file_path: &Path,
 ) -> crate::Result<()> {
     let page_slugs = slugs_from_file(page_list_file_path)?;
+    let PageExistenceBins {
+        existent,
+        nonexistent,
+    } = check_existence(site, page_slugs)?;
 
     Ok(())
 }
@@ -48,4 +53,38 @@ fn slugs_from_file(page_list_file_path: &Path) -> crate::Result<HashSet<String>>
         .collect::<Result<_, _>>()?;
     event!(Level::INFO, "{} pages mentioned", page_slugs.len());
     Ok(page_slugs)
+}
+
+struct PageExistenceBins {
+    existent: HashSet<String>,
+    nonexistent: HashSet<String>,
+}
+
+#[derive(Error, Debug)]
+enum ReadError {
+    #[error("Wikidot responded with an unexpected status")]
+    UnexpectedStatus(StatusCode),
+}
+
+#[instrument(err, skip(page_slugs))]
+fn check_existence(site: &str, page_slugs: HashSet<String>) -> crate::Result<PageExistenceBins> {
+    let mut existent = HashSet::new();
+    let mut nonexistent = HashSet::new();
+
+    for slug in page_slugs {
+        let response = ureq::get(format!("https://{}.wikidot.com/{}", site, slug)).call();
+        if let Err(ureq::Error::StatusCode(404)) = response {
+            nonexistent.insert(slug);
+            continue;
+        }
+        match response?.status() {
+            StatusCode::OK => existent.insert(slug),
+            code => return Err(ReadError::UnexpectedStatus(code).into()),
+        };
+    }
+
+    Ok(PageExistenceBins {
+        existent,
+        nonexistent,
+    })
 }
