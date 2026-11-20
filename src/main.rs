@@ -35,6 +35,9 @@ enum Action {
         page_list_file: PathBuf,
         /// The path to the file containing the new contents for those pages.
         content_file: PathBuf,
+        /// If this flag is specified, then the target pages will be put into the `unlisted` category, and copies with no history will be made to show the new contents.
+        #[arg(long)]
+        discard_history: bool,
         /// If nonexistent pages are mentioned to this action, it will not create them unless this flag is specified.
         #[arg(long)]
         create: bool,
@@ -74,8 +77,16 @@ fn main() -> Result<()> {
         Action::Replace {
             page_list_file,
             content_file,
+            discard_history,
             create,
-        } => actions::replace(&args.site, &page_list_file, &content_file, create, args.yes)?,
+        } => actions::replace(
+            &args.site,
+            &page_list_file,
+            &content_file,
+            discard_history,
+            create,
+            args.yes,
+        )?,
     }
 
     Ok(())

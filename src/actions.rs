@@ -29,6 +29,7 @@ pub fn replace(
     site: &str,
     page_list_file_path: &Path,
     content_file_path: &Path,
+    discard_history: bool,
     create: bool,
     yes: bool,
 ) -> crate::Result<()> {
@@ -81,6 +82,14 @@ pub fn replace(
     }
 
     event!(Level::INFO, "{info_msg}");
+
+    if discard_history {
+        for existent_page in existent {
+            move_to_category(site, &existent_page, "unlisted")?;
+        }
+    }
+
+    todo!("do the actual replacing");
 
     Ok(())
 }
@@ -145,4 +154,19 @@ fn check_existence(site: &str, page_slugs: HashSet<String>) -> crate::Result<Pag
         existent,
         nonexistent,
     })
+}
+
+fn move_to_category(site: &str, slug: &str, category: &str) -> crate::Result<()> {
+    move_page(site, slug, &format!("{}:{}", category, slug))
+}
+
+#[instrument(err)]
+fn move_page(site: &str, slug: &str, new_slug: &str) -> crate::Result<()> {
+    let mut normalized_new_slug = new_slug.to_owned();
+    wikidot_normalize::normalize(&mut normalized_new_slug);
+    if new_slug != normalized_new_slug {
+        return Err(ArgError::InvalidSlug(new_slug.to_owned()).into());
+    }
+
+    todo!("move the page")
 }
