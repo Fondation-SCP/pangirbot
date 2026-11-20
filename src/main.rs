@@ -73,7 +73,7 @@ fn main() -> Result<()> {
         return Err(error.into());
     }
 
-    store_csrf_token(&agent, &args.site)?;
+    extend_csrf_token(&agent, &args.site)?;
 
     event!(Level::INFO, "connection succeeded");
 
@@ -185,19 +185,30 @@ fn read_body(mut body: Body) -> Result<String> {
     body.read_to_string().map_err(Into::into)
 }
 
-#[instrument(err)]
-fn store_csrf_token(agent: &Agent, site: &str) -> Result<()> {
-    let mut cookie_jar = agent.cookie_jar_lock();
+fn get_csrf_token(agent: &Agent) -> Result<String> {
+    let cookie_jar = agent.cookie_jar_lock();
 
     let wikidot_token7 = cookie_jar
         .get("www.wikidot.com", "/", "wikidot_token7")
-        .ok_or(AuthError::NoCsrfToken)?;
+        .ok_or(AuthError::NoCsrfToken)?
+        .value()
+        .to_owned();
+
+    cookie_jar.release();
+    Ok(wikidot_token7)
+}
+
+/// Wikidot transmits the CSRF token as a cookie that is only valid for www.wikidot.com.
+/// This function makes it also valid for the relevant Wikidot site.
+#[instrument(err)]
+fn extend_csrf_token(agent: &Agent, site: &str) -> Result<()> {
+    let wikidot_token7 = get_csrf_token(agent)?;
+
+    let mut cookie_jar = agent.cookie_jar_lock();
 
     let site_uri = format!("https://{}.wikidot.com", site).parse()?;
-    let new_wikidot_token7 = Cookie::parse(
-        format!("wikidot_token7={}", wikidot_token7.value()),
-        &site_uri,
-    )?;
+    let new_wikidot_token7 =
+        Cookie::parse(format!("wikidot_token7={}", wikidot_token7), &site_uri)?;
     cookie_jar.insert(new_wikidot_token7, &site_uri)?;
 
     cookie_jar.release();

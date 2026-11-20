@@ -222,5 +222,18 @@ fn move_page(agent: &Agent, site: &str, page: &PageRef, new_slug: &str) -> crate
         return Err(ArgError::InvalidSlug(new_slug.to_owned()).into());
     }
 
-    todo!("move the page")
+    agent
+        .post(format!(
+            "https://{}.wikidot.com/ajax-module-connector.php",
+            site
+        ))
+        .send_form([
+            ("moduleName", "Empty"),
+            ("action", "WikiPageAction"),
+            ("event", "renamePage"),
+            ("page_id", &page.id.to_string()),
+            ("new_name", new_slug),
+            ("wikidot_token7", &crate::get_csrf_token(agent)?),
+        ])?;
+    Ok(())
 }
