@@ -218,6 +218,8 @@ fn move_to_category(
 #[derive(Deserialize, Debug)]
 struct WikidotResponse {
     status: String,
+    #[allow(unused)]
+    message: String,
 }
 
 #[derive(Error, Debug)]
@@ -231,6 +233,8 @@ struct WriteError {
 enum WriteErrorKind {
     #[error("insufficient permissions")]
     NoPermission,
+    #[error("Wikidot responded with something unexpected")]
+    UnexpectedResponse(WikidotResponse),
 }
 
 #[instrument(err, skip(agent))]
@@ -263,9 +267,13 @@ fn move_page(agent: &Agent, site: &str, page: &PageRef, new_slug: &str) -> crate
             kind: WriteErrorKind::NoPermission,
         }
         .into());
+    } else if response.status != "ok" {
+        return Err(WriteError {
+            slug: page.slug.clone(),
+            kind: WriteErrorKind::UnexpectedResponse(response),
+        }
+        .into());
     }
-
-    dbg!(response);
 
     Ok(())
 }
