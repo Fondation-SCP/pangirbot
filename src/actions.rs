@@ -8,7 +8,7 @@ use std::{
 use indicatif::{ProgressIterator, ProgressStyle};
 use thiserror::Error;
 use tracing::{event, instrument, Level};
-use ureq::http::StatusCode;
+use ureq::{http::StatusCode, Agent};
 
 #[derive(Error, Debug)]
 enum ArgError {
@@ -26,6 +26,7 @@ enum UserAborted {
 
 #[instrument(err)]
 pub fn replace(
+    agent: &Agent,
     site: &str,
     page_list_file_path: &Path,
     content_file_path: &Path,
@@ -37,7 +38,7 @@ pub fn replace(
     let PageExistenceBins {
         existent,
         nonexistent,
-    } = check_existence(site, page_slugs)?;
+    } = check_existence(agent, site, page_slugs)?;
 
     let info_msg = if create && !nonexistent.is_empty() {
         format!(
@@ -85,7 +86,7 @@ pub fn replace(
 
     if discard_history {
         for existent_page in existent {
-            move_to_category(site, &existent_page, "unlisted")?;
+            move_to_category(agent, site, &existent_page, "unlisted")?;
         }
     }
 
@@ -146,7 +147,11 @@ enum ReadErrorKind {
 }
 
 #[instrument(err, skip(page_slugs))]
-fn check_existence(site: &str, page_slugs: HashSet<String>) -> crate::Result<PageExistenceBins> {
+fn check_existence(
+    agent: &Agent,
+    site: &str,
+    page_slugs: HashSet<String>,
+) -> crate::Result<PageExistenceBins> {
     let mut existent = HashSet::new();
     let mut nonexistent = HashSet::new();
 
@@ -154,7 +159,9 @@ fn check_existence(site: &str, page_slugs: HashSet<String>) -> crate::Result<Pag
         ProgressStyle::with_template("Checking which pages exist {wide_bar} {pos}/{len}")
             .expect("the progress bar template should be valid"),
     ) {
-        let response = ureq::get(format!("https://{}.wikidot.com/{}", site, slug)).call();
+        let response = agent
+            .get(format!("https://{}.wikidot.com/{}", site, slug))
+            .call();
         if let Err(ureq::Error::StatusCode(404)) = response {
             nonexistent.insert(slug);
             continue;
@@ -198,12 +205,17 @@ fn find_page_id_in_html(slug: &str, html: &str) -> crate::Result<u64> {
         .map_err(Into::into)
 }
 
-fn move_to_category(site: &str, page: &PageRef, category: &str) -> crate::Result<()> {
-    move_page(site, page, &format!("{}:{}", category, page.slug))
+fn move_to_category(
+    agent: &Agent,
+    site: &str,
+    page: &PageRef,
+    category: &str,
+) -> crate::Result<()> {
+    move_page(agent, site, page, &format!("{}:{}", category, page.slug))
 }
 
 #[instrument(err)]
-fn move_page(site: &str, page: &PageRef, new_slug: &str) -> crate::Result<()> {
+fn move_page(agent: &Agent, site: &str, page: &PageRef, new_slug: &str) -> crate::Result<()> {
     let mut normalized_new_slug = new_slug.to_owned();
     wikidot_normalize::normalize(&mut normalized_new_slug);
     if new_slug != normalized_new_slug {

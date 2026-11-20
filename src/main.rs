@@ -9,7 +9,7 @@ use scraper::{Html, Selector};
 use secrecy::{ExposeSecret, SecretString};
 use thiserror::Error;
 use tracing::{event, instrument, Level};
-use ureq::{http::Response, Body};
+use ureq::{http::Response, Agent, Body, Cookie};
 use zeroize::Zeroizing;
 
 mod actions;
@@ -52,7 +52,9 @@ fn main() -> Result<()> {
     let username = read_username()?;
     let password = read_pw_file()?;
 
-    let auth_response = auth(&username, &password)?;
+    let agent = ureq::agent();
+
+    let auth_response = auth(&agent, &username, &password)?;
     let auth_response_body_str = read_body(auth_response.into_body())?;
     let auth_response_body = Html::parse_document(&auth_response_body_str);
 
@@ -71,6 +73,8 @@ fn main() -> Result<()> {
         return Err(error.into());
     }
 
+    store_csrf_token(&agent, &args.site)?;
+
     event!(Level::INFO, "connection succeeded");
 
     match args.action {
@@ -80,6 +84,7 @@ fn main() -> Result<()> {
             discard_history,
             create,
         } => actions::replace(
+            &agent,
             &args.site,
             &page_list_file,
             &content_file,
@@ -96,6 +101,8 @@ fn main() -> Result<()> {
 enum AuthError {
     #[error("wrong password")]
     WrongPassword,
+    #[error("Wikidot did not transmit a CSRF token")]
+    NoCsrfToken,
 }
 
 #[instrument(err)]
@@ -161,8 +168,9 @@ fn check_pw_file_on_unix(metadata: &Metadata) -> Result<()> {
 }
 
 #[instrument(err)]
-fn auth(username: &str, password: &SecretString) -> Result<Response<Body>> {
-    ureq::post("https://www.wikidot.com/default--flow/login__LoginPopupScreen")
+fn auth(agent: &Agent, username: &str, password: &SecretString) -> Result<Response<Body>> {
+    agent
+        .post("https://www.wikidot.com/default--flow/login__LoginPopupScreen")
         .send_form([
             ("login", username),
             ("password", password.expose_secret()),
@@ -175,4 +183,23 @@ fn auth(username: &str, password: &SecretString) -> Result<Response<Body>> {
 #[instrument(err)]
 fn read_body(mut body: Body) -> Result<String> {
     body.read_to_string().map_err(Into::into)
+}
+
+#[instrument(err)]
+fn store_csrf_token(agent: &Agent, site: &str) -> Result<()> {
+    let mut cookie_jar = agent.cookie_jar_lock();
+
+    let wikidot_token7 = cookie_jar
+        .get("www.wikidot.com", "/", "wikidot_token7")
+        .ok_or(AuthError::NoCsrfToken)?;
+
+    let site_uri = format!("https://{}.wikidot.com", site).parse()?;
+    let new_wikidot_token7 = Cookie::parse(
+        format!("wikidot_token7={}", wikidot_token7.value()),
+        &site_uri,
+    )?;
+    cookie_jar.insert(new_wikidot_token7, &site_uri)?;
+
+    cookie_jar.release();
+    Ok(())
 }
