@@ -167,7 +167,7 @@ fn check_pw_file_on_unix(metadata: &Metadata) -> Result<()> {
     }
 }
 
-#[instrument(err)]
+#[instrument(err, skip(agent))]
 fn auth(agent: &Agent, username: &str, password: &SecretString) -> Result<Response<Body>> {
     agent
         .post("https://www.wikidot.com/default--flow/login__LoginPopupScreen")
@@ -200,7 +200,7 @@ fn get_csrf_token(agent: &Agent) -> Result<String> {
 
 /// Wikidot transmits the CSRF token as a cookie that is only valid for www.wikidot.com.
 /// This function makes it also valid for the relevant Wikidot site.
-#[instrument(err)]
+#[instrument(err, skip(agent))]
 fn extend_csrf_token(agent: &Agent, site: &str) -> Result<()> {
     let wikidot_token7 = get_csrf_token(agent)?;
 

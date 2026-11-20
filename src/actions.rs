@@ -24,7 +24,7 @@ enum UserAborted {
     NoInteractiveTty,
 }
 
-#[instrument(err)]
+#[instrument(err, skip(agent))]
 pub fn replace(
     agent: &Agent,
     site: &str,
@@ -146,7 +146,7 @@ enum ReadErrorKind {
     NoPageId,
 }
 
-#[instrument(err, skip(page_slugs))]
+#[instrument(err, skip(agent, page_slugs))]
 fn check_existence(
     agent: &Agent,
     site: &str,
@@ -214,7 +214,7 @@ fn move_to_category(
     move_page(agent, site, page, &format!("{}:{}", category, page.slug))
 }
 
-#[instrument(err)]
+#[instrument(err, skip(agent))]
 fn move_page(agent: &Agent, site: &str, page: &PageRef, new_slug: &str) -> crate::Result<()> {
     let mut normalized_new_slug = new_slug.to_owned();
     wikidot_normalize::normalize(&mut normalized_new_slug);
