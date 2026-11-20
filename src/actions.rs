@@ -120,14 +120,22 @@ fn slugs_from_file(page_list_file_path: &Path) -> crate::Result<HashSet<String>>
 }
 
 struct PageExistenceBins {
-    existent: HashSet<String>,
+    existent: HashSet<PageRef>,
     nonexistent: HashSet<String>,
+}
+
+#[derive(Hash, PartialEq, Eq)]
+struct PageRef {
+    slug: String,
+    id: u64,
 }
 
 #[derive(Error, Debug)]
 enum ReadError {
     #[error("Wikidot responded with an unexpected status")]
     UnexpectedStatus(StatusCode),
+    #[error("a page was found, but not its numeric ID")]
+    NoPageId,
 }
 
 #[instrument(err, skip(page_slugs))]
@@ -144,8 +152,12 @@ fn check_existence(site: &str, page_slugs: HashSet<String>) -> crate::Result<Pag
             nonexistent.insert(slug);
             continue;
         }
-        match response?.status() {
-            StatusCode::OK => existent.insert(slug),
+        let response = response?;
+        match response.status() {
+            StatusCode::OK => {
+                let id = find_page_id_in_html(&response.into_body().read_to_string()?)?;
+                existent.insert(PageRef { slug, id });
+            }
             code => return Err(ReadError::UnexpectedStatus(code).into()),
         };
     }
@@ -154,6 +166,17 @@ fn check_existence(site: &str, page_slugs: HashSet<String>) -> crate::Result<Pag
         existent,
         nonexistent,
     })
+}
+
+fn find_page_id_in_html(html: &str) -> crate::Result<u64> {
+    let marker = "WIKIREQUEST.info.pageId = ";
+    let start = html.find(marker).ok_or(ReadError::NoPageId)? + marker.len();
+    html[start..]
+        .split(|c: char| !c.is_ascii_digit())
+        .next()
+        .ok_or(ReadError::NoPageId)?
+        .parse()
+        .map_err(Into::into)
 }
 
 fn move_to_category(site: &str, slug: &str, category: &str) -> crate::Result<()> {
