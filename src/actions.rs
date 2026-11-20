@@ -131,7 +131,14 @@ struct PageRef {
 }
 
 #[derive(Error, Debug)]
-enum ReadError {
+#[error("error while reading page `{slug}`: {kind}")]
+struct ReadError {
+    slug: String,
+    kind: ReadErrorKind,
+}
+
+#[derive(Error, Debug)]
+enum ReadErrorKind {
     #[error("Wikidot responded with an unexpected status")]
     UnexpectedStatus(StatusCode),
     #[error("a page was found, but not its numeric ID")]
@@ -155,10 +162,16 @@ fn check_existence(site: &str, page_slugs: HashSet<String>) -> crate::Result<Pag
         let response = response?;
         match response.status() {
             StatusCode::OK => {
-                let id = find_page_id_in_html(&response.into_body().read_to_string()?)?;
+                let id = find_page_id_in_html(&slug, &response.into_body().read_to_string()?)?;
                 existent.insert(PageRef { slug, id });
             }
-            code => return Err(ReadError::UnexpectedStatus(code).into()),
+            code => {
+                return Err(ReadError {
+                    slug,
+                    kind: ReadErrorKind::UnexpectedStatus(code),
+                }
+                .into())
+            }
         };
     }
 
@@ -168,13 +181,19 @@ fn check_existence(site: &str, page_slugs: HashSet<String>) -> crate::Result<Pag
     })
 }
 
-fn find_page_id_in_html(html: &str) -> crate::Result<u64> {
+fn find_page_id_in_html(slug: &str, html: &str) -> crate::Result<u64> {
     let marker = "WIKIREQUEST.info.pageId = ";
-    let start = html.find(marker).ok_or(ReadError::NoPageId)? + marker.len();
+    let start = html.find(marker).ok_or(ReadError {
+        slug: slug.to_owned(),
+        kind: ReadErrorKind::NoPageId,
+    })? + marker.len();
     html[start..]
         .split(|c: char| !c.is_ascii_digit())
         .next()
-        .ok_or(ReadError::NoPageId)?
+        .ok_or(ReadError {
+            slug: slug.to_owned(),
+            kind: ReadErrorKind::NoPageId,
+        })?
         .parse()
         .map_err(Into::into)
 }
