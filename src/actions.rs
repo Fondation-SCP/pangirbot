@@ -6,6 +6,7 @@ use std::{
 };
 
 use indicatif::{ProgressIterator, ProgressStyle};
+use serde::Deserialize;
 use thiserror::Error;
 use tracing::{event, instrument, Level};
 use ureq::{http::StatusCode, Agent};
@@ -214,6 +215,24 @@ fn move_to_category(
     move_page(agent, site, page, &format!("{}:{}", category, page.slug))
 }
 
+#[derive(Deserialize, Debug)]
+struct WikidotResponse {
+    status: String,
+}
+
+#[derive(Error, Debug)]
+#[error("error while modifying page `{slug}`: {kind}")]
+struct WriteError {
+    slug: String,
+    kind: WriteErrorKind,
+}
+
+#[derive(Error, Debug)]
+enum WriteErrorKind {
+    #[error("insufficient permissions")]
+    NoPermission,
+}
+
 #[instrument(err, skip(agent))]
 fn move_page(agent: &Agent, site: &str, page: &PageRef, new_slug: &str) -> crate::Result<()> {
     let mut normalized_new_slug = new_slug.to_owned();
@@ -222,7 +241,7 @@ fn move_page(agent: &Agent, site: &str, page: &PageRef, new_slug: &str) -> crate
         return Err(ArgError::InvalidSlug(new_slug.to_owned()).into());
     }
 
-    agent
+    let response: WikidotResponse = agent
         .post(format!(
             "https://{}.wikidot.com/ajax-module-connector.php",
             site
@@ -234,6 +253,19 @@ fn move_page(agent: &Agent, site: &str, page: &PageRef, new_slug: &str) -> crate
             ("page_id", &page.id.to_string()),
             ("new_name", new_slug),
             ("wikidot_token7", &crate::get_csrf_token(agent)?),
-        ])?;
+        ])?
+        .into_body()
+        .read_json()?;
+
+    if response.status == "no_permission" {
+        return Err(WriteError {
+            slug: page.slug.clone(),
+            kind: WriteErrorKind::NoPermission,
+        }
+        .into());
+    }
+
+    dbg!(response);
+
     Ok(())
 }
