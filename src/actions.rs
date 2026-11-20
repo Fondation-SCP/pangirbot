@@ -124,7 +124,7 @@ struct PageExistenceBins {
     nonexistent: HashSet<String>,
 }
 
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Hash, PartialEq, Eq, Debug)]
 struct PageRef {
     slug: String,
     id: u64,
@@ -198,12 +198,12 @@ fn find_page_id_in_html(slug: &str, html: &str) -> crate::Result<u64> {
         .map_err(Into::into)
 }
 
-fn move_to_category(site: &str, slug: &str, category: &str) -> crate::Result<()> {
-    move_page(site, slug, &format!("{}:{}", category, slug))
+fn move_to_category(site: &str, page: &PageRef, category: &str) -> crate::Result<()> {
+    move_page(site, page, &format!("{}:{}", category, page.slug))
 }
 
 #[instrument(err)]
-fn move_page(site: &str, slug: &str, new_slug: &str) -> crate::Result<()> {
+fn move_page(site: &str, page: &PageRef, new_slug: &str) -> crate::Result<()> {
     let mut normalized_new_slug = new_slug.to_owned();
     wikidot_normalize::normalize(&mut normalized_new_slug);
     if new_slug != normalized_new_slug {
