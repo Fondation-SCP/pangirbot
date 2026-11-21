@@ -4,6 +4,7 @@ use std::{
     fs::{self, File},
     io::{BufRead, BufReader, IsTerminal},
     path::PathBuf,
+    time::Duration,
 };
 
 use indicatif::{ProgressIterator, ProgressStyle};
@@ -347,8 +348,14 @@ fn move_to_category(
 }
 
 #[derive(Deserialize, Debug, Clone)]
-struct WikidotResponse {
+struct BaseResponse {
     status: String,
+}
+
+impl WikidotResponse for BaseResponse {
+    fn status(&self) -> &str {
+        &self.status
+    }
 }
 
 #[derive(Error, Debug)]
@@ -382,7 +389,7 @@ fn move_page(agent: &Agent, site: &str, page: &PageRef, new_slug: &str) -> crate
         return Err(ArgError::InvalidSlug(new_slug.to_owned()).into());
     }
 
-    let response: WikidotResponse = module_request(
+    let response: BaseResponse = module_request(
         agent,
         site,
         "Empty",
@@ -418,14 +425,19 @@ fn move_page(agent: &Agent, site: &str, page: &PageRef, new_slug: &str) -> crate
 
 #[derive(Deserialize, Debug, Clone)]
 struct LockResponse {
-    #[serde(flatten)]
-    wd: WikidotResponse,
+    status: String,
     #[serde(default)]
     locked: bool,
     lock_id: Option<u64>,
     lock_secret: Option<String>,
     page_revision_id: Option<u64>,
     body: String,
+}
+
+impl WikidotResponse for LockResponse {
+    fn status(&self) -> &str {
+        &self.status
+    }
 }
 
 struct PageLock {
@@ -476,7 +488,7 @@ fn set_contents(
         params.push(("revision_id", rev_id_str));
     }
 
-    let response: WikidotResponse = module_request(agent, site, "Empty", params)?;
+    let response: BaseResponse = module_request(agent, site, "Empty", params)?;
 
     if response.status == "no_permission" {
         return Err(WriteError {
@@ -517,13 +529,13 @@ fn try_lock(
         kind: WriteErrorKind::UnexpectedResponse(Box::new(lock_response.clone())),
     };
 
-    if lock_response.wd.status == "no_permission" {
+    if lock_response.status == "no_permission" {
         return Err(WriteError {
             slug: slug.to_owned(),
             kind: WriteErrorKind::NoPermission,
         }
         .into());
-    } else if lock_response.wd.status != "ok" {
+    } else if lock_response.status != "ok" {
         return Err(unexpected_response_err.into());
     } else if lock_response.locked {
         let holder_username = find_user_holding_lock(slug, &lock_response.body)?;
@@ -548,6 +560,14 @@ fn try_lock(
     }
 }
 
+trait WikidotResponse: DeserializeOwned {
+    fn status(&self) -> &str;
+}
+
+#[derive(Error, Debug)]
+#[error("Wikidot™")]
+struct WikidotError;
+
 #[instrument(err, skip(agent))]
 fn module_request<I, K, V, R>(
     agent: &Agent,
@@ -559,25 +579,40 @@ where
     I: IntoIterator<Item = (K, V)> + Debug,
     K: AsRef<str> + Debug,
     V: AsRef<str> + Debug,
-    R: DeserializeOwned,
+    R: WikidotResponse,
 {
     let params: Vec<_> = params.into_iter().collect();
-    agent
-        .post(format!(
-            "https://{}.wikidot.com/ajax-module-connector.php",
-            site
-        ))
-        .send_form(
-            [
-                ("moduleName", module_name),
-                ("wikidot_token7", &crate::get_csrf_token(agent)?),
-            ]
-            .into_iter()
-            .chain(params.iter().map(|(k, v)| (k.as_ref(), v.as_ref()))),
-        )?
-        .into_body()
-        .read_json()
-        .map_err(Into::into)
+    let mut attempts = 0;
+
+    loop {
+        let response: R = agent
+            .post(format!(
+                "https://{}.wikidot.com/ajax-module-connector.php",
+                site
+            ))
+            .send_form(
+                [
+                    ("moduleName", module_name),
+                    ("wikidot_token7", &crate::get_csrf_token(agent)?),
+                ]
+                .into_iter()
+                .chain(params.iter().map(|(k, v)| (k.as_ref(), v.as_ref()))),
+            )?
+            .into_body()
+            .read_json()?;
+        attempts += 1;
+
+        if response.status() == "try_again" {
+            event!(Level::WARN, "Wikidot sent status \"try_again\"");
+            if attempts < 5 {
+                std::thread::sleep(Duration::from_secs(1));
+            } else {
+                return Err(WikidotError.into());
+            }
+        } else {
+            return Ok(response);
+        }
+    }
 }
 
 #[instrument(err)]
