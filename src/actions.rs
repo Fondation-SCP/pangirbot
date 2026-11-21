@@ -1,12 +1,13 @@
 use std::{
     collections::HashSet,
-    fs::File,
+    fmt::Debug,
+    fs::{self, File},
     io::{BufRead, BufReader, IsTerminal},
     path::Path,
 };
 
 use indicatif::{ProgressIterator, ProgressStyle};
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 use thiserror::Error;
 use tracing::{event, instrument, Level};
 use ureq::{http::StatusCode, Agent};
@@ -29,13 +30,17 @@ enum UserAborted {
 pub fn replace(
     agent: &Agent,
     site: &str,
+    bot_username: &str,
     page_list_file_path: &Path,
     content_file_path: &Path,
     discard_history: bool,
     create: bool,
+    forceful: bool,
     yes: bool,
 ) -> crate::Result<()> {
     let page_slugs = slugs_from_file(page_list_file_path)?;
+    let contents = fs::read_to_string(content_file_path)?;
+
     let PageExistenceBins {
         existent,
         nonexistent,
@@ -89,9 +94,19 @@ pub fn replace(
         for existent_page in existent {
             move_to_category(agent, site, &existent_page, "unlisted")?;
         }
+        todo!("do the actual replacing");
+    } else {
+        for existent_page in existent {
+            replace_contents(
+                agent,
+                site,
+                bot_username,
+                &existent_page,
+                &contents,
+                forceful,
+            )?;
+        }
     }
-
-    todo!("do the actual replacing");
 
     Ok(())
 }
@@ -218,8 +233,6 @@ fn move_to_category(
 #[derive(Deserialize, Debug)]
 struct WikidotResponse {
     status: String,
-    #[allow(unused)]
-    message: String,
 }
 
 #[derive(Error, Debug)]
@@ -233,8 +246,12 @@ struct WriteError {
 enum WriteErrorKind {
     #[error("insufficient permissions")]
     NoPermission,
-    #[error("Wikidot responded with something unexpected")]
-    UnexpectedResponse(WikidotResponse),
+    #[error("Wikidot responded with something unexpected: {0:?}")]
+    UnexpectedResponse(Box<dyn Debug>),
+    #[error("page locked by someone else")]
+    Locked,
+    #[error("page locked, but Wikidot responded with something unexpected that will not let us know who locked it: {0:?}")]
+    UnidentifiedLockHolder(String),
 }
 
 #[instrument(err, skip(agent))]
@@ -245,21 +262,17 @@ fn move_page(agent: &Agent, site: &str, page: &PageRef, new_slug: &str) -> crate
         return Err(ArgError::InvalidSlug(new_slug.to_owned()).into());
     }
 
-    let response: WikidotResponse = agent
-        .post(format!(
-            "https://{}.wikidot.com/ajax-module-connector.php",
-            site
-        ))
-        .send_form([
-            ("moduleName", "Empty"),
+    let response: WikidotResponse = module_request(
+        agent,
+        site,
+        "Empty",
+        [
             ("action", "WikiPageAction"),
             ("event", "renamePage"),
             ("page_id", &page.id.to_string()),
             ("new_name", new_slug),
-            ("wikidot_token7", &crate::get_csrf_token(agent)?),
-        ])?
-        .into_body()
-        .read_json()?;
+        ],
+    )?;
 
     if response.status == "no_permission" {
         return Err(WriteError {
@@ -270,7 +283,7 @@ fn move_page(agent: &Agent, site: &str, page: &PageRef, new_slug: &str) -> crate
     } else if response.status != "ok" {
         return Err(WriteError {
             slug: page.slug.clone(),
-            kind: WriteErrorKind::UnexpectedResponse(response),
+            kind: WriteErrorKind::UnexpectedResponse(Box::new(response)),
         }
         .into());
     }
@@ -278,4 +291,118 @@ fn move_page(agent: &Agent, site: &str, page: &PageRef, new_slug: &str) -> crate
     event!(Level::INFO, "moved page `{}` to `{}`", page.slug, new_slug);
 
     Ok(())
+}
+
+#[derive(Deserialize, Debug)]
+struct LockResponse {
+    #[serde(flatten)]
+    wd: WikidotResponse,
+    #[serde(default)]
+    locked: bool,
+    body: String,
+}
+
+#[instrument(err, skip(agent))]
+fn replace_contents(
+    agent: &Agent,
+    site: &str,
+    bot_username: &str,
+    page: &PageRef,
+    new_contents: &str,
+    forceful: bool,
+) -> crate::Result<()> {
+    try_lock(agent, site, bot_username, &page.slug, forceful)?;
+    todo!("do the actual replacing");
+    Ok(())
+}
+
+#[instrument(err, skip(agent))]
+fn try_lock(
+    agent: &Agent,
+    site: &str,
+    bot_username: &str,
+    slug: &str,
+    forceful: bool,
+) -> crate::Result<()> {
+    let mut lock_params = vec![("mode", "page"), ("wiki_page", slug)];
+    if forceful {
+        lock_params.push(("force_lock", "yes"))
+    }
+    let lock_response: LockResponse =
+        module_request(agent, site, "edit/PageEditModule", lock_params)?;
+
+    if lock_response.wd.status == "no_permission" {
+        return Err(WriteError {
+            slug: slug.to_owned(),
+            kind: WriteErrorKind::NoPermission,
+        }
+        .into());
+    } else if lock_response.wd.status != "ok" {
+        return Err(WriteError {
+            slug: slug.to_owned(),
+            kind: WriteErrorKind::UnexpectedResponse(Box::new(lock_response)),
+        }
+        .into());
+    } else if lock_response.locked {
+        let holder_username = find_user_holding_lock(slug, &lock_response.body)?;
+        if holder_username == bot_username {
+            return try_lock(agent, site, bot_username, slug, true);
+        }
+
+        return Err(WriteError {
+            slug: slug.to_owned(),
+            kind: WriteErrorKind::Locked,
+        }
+        .into());
+    }
+
+    Ok(())
+}
+
+#[instrument(err, skip(agent))]
+fn module_request<I, K, V, R>(
+    agent: &Agent,
+    site: &str,
+    module_name: &str,
+    params: I,
+) -> crate::Result<R>
+where
+    I: IntoIterator<Item = (K, V)> + Debug,
+    K: AsRef<str> + Debug,
+    V: AsRef<str> + Debug,
+    R: DeserializeOwned,
+{
+    let params: Vec<_> = params.into_iter().collect();
+    agent
+        .post(format!(
+            "https://{}.wikidot.com/ajax-module-connector.php",
+            site
+        ))
+        .send_form(
+            [
+                ("moduleName", module_name),
+                ("wikidot_token7", &crate::get_csrf_token(agent)?),
+            ]
+            .into_iter()
+            .chain(params.iter().map(|(k, v)| (k.as_ref(), v.as_ref()))),
+        )?
+        .into_body()
+        .read_json()
+        .map_err(Into::into)
+}
+
+#[instrument(err)]
+fn find_user_holding_lock(slug: &str, html: &str) -> crate::Result<String> {
+    let error = WriteError {
+        slug: slug.to_owned(),
+        kind: WriteErrorKind::UnidentifiedLockHolder(html.to_owned()),
+    };
+
+    match html.match_indices("</a>").nth(1) {
+        None => return Err(error.into()),
+        Some((end, _)) => {
+            let start = html[..end].rfind(">").ok_or(error)?;
+            Ok(html[start + 1..end].to_owned())
+        }
+    }
 }

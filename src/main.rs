@@ -41,6 +41,9 @@ enum Action {
         /// If nonexistent pages are mentioned to this action, it will not create them unless this flag is specified.
         #[arg(long)]
         create: bool,
+        /// Page edition locks will not be taken by force unless this flag is specified.
+        #[arg(short, long)]
+        forceful: bool,
     },
 }
 
@@ -83,13 +86,16 @@ fn main() -> Result<()> {
             content_file,
             discard_history,
             create,
+            forceful,
         } => actions::replace(
             &agent,
             &args.site,
+            &username,
             &page_list_file,
             &content_file,
             discard_history,
             create,
+            forceful,
             args.yes,
         )?,
     }
