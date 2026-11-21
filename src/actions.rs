@@ -88,6 +88,11 @@ pub fn replace(
         }
     }
 
+    // TODO:
+    // - have a "--message blablabla" option in the cli
+    // - if no message option and !yes, prompt the user
+    let comment = "";
+
     event!(Level::INFO, "{info_msg}");
 
     if discard_history {
@@ -97,12 +102,13 @@ pub fn replace(
         todo!("do the actual replacing");
     } else {
         for existent_page in existent {
-            replace_contents(
+            set_contents(
                 agent,
                 site,
                 bot_username,
                 &existent_page,
                 &contents,
+                comment,
                 forceful,
             )?;
         }
@@ -145,6 +151,7 @@ struct PageExistenceBins {
 struct PageRef {
     slug: String,
     id: u64,
+    title: String,
 }
 
 #[derive(Error, Debug)]
@@ -160,6 +167,8 @@ enum ReadErrorKind {
     UnexpectedStatus(StatusCode),
     #[error("a page was found, but not its numeric ID")]
     NoPageId,
+    #[error("a page was found, but not its title")]
+    NoPageTitle,
 }
 
 #[instrument(err, skip(agent, page_slugs))]
@@ -185,8 +194,10 @@ fn check_existence(
         let response = response?;
         match response.status() {
             StatusCode::OK => {
-                let id = find_page_id_in_html(&slug, &response.into_body().read_to_string()?)?;
-                existent.insert(PageRef { slug, id });
+                let html = &response.into_body().read_to_string()?;
+                let id = find_page_id_in_html(&slug, html)?;
+                let title = find_page_title_in_html(&slug, html)?;
+                existent.insert(PageRef { slug, id, title });
             }
             code => {
                 return Err(ReadError {
@@ -221,6 +232,23 @@ fn find_page_id_in_html(slug: &str, html: &str) -> crate::Result<u64> {
         .map_err(Into::into)
 }
 
+fn find_page_title_in_html(slug: &str, html: &str) -> crate::Result<String> {
+    let marker = "<div id=\"page-title\">\n                            ";
+    let start = html.find(marker).ok_or(ReadError {
+        slug: slug.to_owned(),
+        kind: ReadErrorKind::NoPageId,
+    })? + marker.len();
+    html[start..]
+        .split("\n                        <")
+        .next()
+        .ok_or(ReadError {
+            slug: slug.to_owned(),
+            kind: ReadErrorKind::NoPageTitle,
+        })?
+        .parse()
+        .map_err(Into::into)
+}
+
 fn move_to_category(
     agent: &Agent,
     site: &str,
@@ -230,7 +258,7 @@ fn move_to_category(
     move_page(agent, site, page, &format!("{}:{}", category, page.slug))
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 struct WikidotResponse {
     status: String,
 }
@@ -293,26 +321,75 @@ fn move_page(agent: &Agent, site: &str, page: &PageRef, new_slug: &str) -> crate
     Ok(())
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 struct LockResponse {
     #[serde(flatten)]
     wd: WikidotResponse,
     #[serde(default)]
     locked: bool,
+    lock_id: Option<u64>,
+    lock_secret: Option<String>,
+    page_revision_id: Option<u64>,
     body: String,
 }
 
+struct PageLock {
+    id: u64,
+    secret: String,
+    revision_id: Option<u64>,
+}
+
 #[instrument(err, skip(agent))]
-fn replace_contents(
+fn set_contents(
     agent: &Agent,
     site: &str,
     bot_username: &str,
     page: &PageRef,
     new_contents: &str,
+    comment: &str,
     forceful: bool,
 ) -> crate::Result<()> {
-    try_lock(agent, site, bot_username, &page.slug, forceful)?;
-    todo!("do the actual replacing");
+    let lock = try_lock(agent, site, bot_username, &page.slug, forceful)?;
+
+    let page_id_str = page.id.to_string();
+    let lock_id_str = lock.id.to_string();
+    let rev_id_str = lock.revision_id.map_or_default(|id| id.to_string());
+
+    let mut params = vec![
+        ("action", "WikiPageAction"),
+        ("event", "savePage"),
+        ("mode", "page"),
+        ("wiki_page", &page.slug),
+        ("page_id", &page_id_str),
+        ("lock_id", &lock_id_str),
+        ("lock_secret", &lock.secret),
+        ("source", new_contents),
+        ("title", &page.title),
+        ("comments", comment),
+    ];
+
+    if lock.revision_id.is_some() {
+        params.push(("revision_id", &rev_id_str));
+    }
+
+    let response: WikidotResponse = module_request(agent, site, "Empty", params)?;
+
+    if response.status == "no_permission" {
+        return Err(WriteError {
+            slug: page.slug.clone(),
+            kind: WriteErrorKind::NoPermission,
+        }
+        .into());
+    } else if response.status != "ok" {
+        return Err(WriteError {
+            slug: page.slug.clone(),
+            kind: WriteErrorKind::UnexpectedResponse(Box::new(response)),
+        }
+        .into());
+    }
+
+    event!(Level::INFO, "replaced contents of page `{}`", page.slug);
+
     Ok(())
 }
 
@@ -323,13 +400,18 @@ fn try_lock(
     bot_username: &str,
     slug: &str,
     forceful: bool,
-) -> crate::Result<()> {
+) -> crate::Result<PageLock> {
     let mut lock_params = vec![("mode", "page"), ("wiki_page", slug)];
     if forceful {
         lock_params.push(("force_lock", "yes"))
     }
     let lock_response: LockResponse =
         module_request(agent, site, "edit/PageEditModule", lock_params)?;
+
+    let unexpected_response_err = WriteError {
+        slug: slug.to_owned(),
+        kind: WriteErrorKind::UnexpectedResponse(Box::new(lock_response.clone())),
+    };
 
     if lock_response.wd.status == "no_permission" {
         return Err(WriteError {
@@ -338,11 +420,7 @@ fn try_lock(
         }
         .into());
     } else if lock_response.wd.status != "ok" {
-        return Err(WriteError {
-            slug: slug.to_owned(),
-            kind: WriteErrorKind::UnexpectedResponse(Box::new(lock_response)),
-        }
-        .into());
+        return Err(unexpected_response_err.into());
     } else if lock_response.locked {
         let holder_username = find_user_holding_lock(slug, &lock_response.body)?;
         if holder_username == bot_username {
@@ -356,7 +434,14 @@ fn try_lock(
         .into());
     }
 
-    Ok(())
+    match (lock_response.lock_id, lock_response.lock_secret) {
+        (Some(id), Some(secret)) => Ok(PageLock {
+            id,
+            secret,
+            revision_id: lock_response.page_revision_id,
+        }),
+        _ => Err(unexpected_response_err.into()),
+    }
 }
 
 #[instrument(err, skip(agent))]
