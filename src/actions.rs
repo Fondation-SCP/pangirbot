@@ -3,7 +3,7 @@ use std::{
     fmt::Debug,
     fs::{self, File},
     io::{BufRead, BufReader, IsTerminal},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -629,4 +629,14 @@ fn find_user_holding_lock(slug: &str, html: &str) -> crate::Result<String> {
             Ok(html[start + 1..end].to_owned())
         }
     }
+}
+
+pub fn tag(
+    agent: &Agent,
+    site: &str,
+    page_list_file_path: &Path,
+    diff_str: &str,
+    yes: bool,
+) -> crate::Result<()> {
+    todo!("tag")
 }

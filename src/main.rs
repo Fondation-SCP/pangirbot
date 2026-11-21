@@ -26,13 +26,13 @@ struct Cli {
     /// Always say 'yes' to confirmation prompts.
     #[arg(short, long)]
     yes: bool,
+    /// The path to the file containing the slugs of the target pages (one slug per line inside the file).
+    page_list_file: PathBuf,
 }
 
 #[derive(Subcommand)]
 enum Action {
     Replace {
-        /// The path to the file containing the slugs of the pages whose contents must be replaced (one slug per line inside the file).
-        page_list_file: PathBuf,
         /// The path to the file containing the new contents for those pages.
         content_file: PathBuf,
         /// If this flag is specified, then the target pages will be put into the `unlisted` category, and copies with no history will be made to show the new contents.
@@ -46,6 +46,10 @@ enum Action {
         forceful: bool,
         #[arg(short, long)]
         message: Option<String>,
+    },
+    Tag {
+        /// The tag diff to be applied.
+        diff_str: String,
     },
 }
 
@@ -84,7 +88,6 @@ fn main() -> Result<()> {
 
     match args.action {
         Action::Replace {
-            page_list_file,
             content_file,
             discard_history,
             create,
@@ -94,8 +97,15 @@ fn main() -> Result<()> {
             &agent,
             &args.site,
             &username,
-            actions::EditOptions::new(page_list_file, create, forceful, message),
+            actions::EditOptions::new(args.page_list_file, create, forceful, message),
             actions::ReplaceOptions::new(content_file, discard_history),
+            args.yes,
+        )?,
+        Action::Tag { diff_str } => actions::tag(
+            &agent,
+            &args.site,
+            &args.page_list_file,
+            &diff_str,
             args.yes,
         )?,
     }
