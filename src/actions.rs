@@ -275,5 +275,7 @@ fn move_page(agent: &Agent, site: &str, page: &PageRef, new_slug: &str) -> crate
         .into());
     }
 
+    event!(Level::INFO, "moved page `{}` to `{}`", page.slug, new_slug);
+
     Ok(())
 }
