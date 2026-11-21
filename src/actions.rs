@@ -80,7 +80,7 @@ pub fn replace(
     let PageExistenceBins {
         existent,
         nonexistent,
-    } = check_existence(agent, site, page_slugs)?;
+    } = check_existence(agent, site, &page_slugs)?;
 
     let info_msg = if edit_options.create && !nonexistent.is_empty() {
         format!(
@@ -142,18 +142,35 @@ pub fn replace(
 
     event!(Level::INFO, "{info_msg}");
 
-    if replace_options.discard_history {
-        for existent_page in existent {
+    for existent_page in existent {
+        if replace_options.discard_history {
             move_to_category(agent, site, &existent_page, "unlisted")?;
         }
-        todo!("do the actual replacing");
-    } else {
-        for existent_page in existent {
+        set_contents(
+            agent,
+            site,
+            bot_username,
+            &existent_page,
+            &contents,
+            &comment,
+            edit_options.forceful,
+        )?;
+    }
+    if edit_options.create {
+        for SlugParseResult {
+            normalized,
+            encountered,
+        } in nonexistent
+        {
             set_contents(
                 agent,
                 site,
                 bot_username,
-                &existent_page,
+                &PageRef {
+                    slug: normalized,
+                    title: encountered,
+                    id: None,
+                },
                 &contents,
                 &comment,
                 edit_options.forceful,
@@ -164,11 +181,17 @@ pub fn replace(
     Ok(())
 }
 
+#[derive(PartialEq, Eq, Hash, Clone)]
+struct SlugParseResult {
+    normalized: String,
+    encountered: String,
+}
+
 #[instrument(err)]
-fn slugs_from_file(page_list_file_path: &PathBuf) -> crate::Result<HashSet<String>> {
+fn slugs_from_file(page_list_file_path: &PathBuf) -> crate::Result<Vec<SlugParseResult>> {
     let page_list_file = File::open(page_list_file_path)?;
     let page_list_file_reader = BufReader::new(page_list_file);
-    let page_slugs: HashSet<String> = page_list_file_reader
+    let page_slugs: Vec<_> = page_list_file_reader
         .lines()
         .map_while(Result::ok)
         .filter_map(|mut line| {
@@ -178,27 +201,26 @@ fn slugs_from_file(page_list_file_path: &PathBuf) -> crate::Result<HashSet<Strin
 
             let line_in_file = line.clone();
             wikidot_normalize::normalize(&mut line);
-            Some(if line == line_in_file {
-                Ok(line)
-            } else {
-                Err(ArgError::InvalidSlug(line_in_file))
+            Some(SlugParseResult {
+                normalized: line,
+                encountered: line_in_file,
             })
         })
-        .collect::<Result<_, _>>()?;
+        .collect();
     event!(Level::INFO, "{} pages mentioned", page_slugs.len());
     Ok(page_slugs)
 }
 
 struct PageExistenceBins {
     existent: HashSet<PageRef>,
-    nonexistent: HashSet<String>,
+    nonexistent: HashSet<SlugParseResult>,
 }
 
 #[derive(Hash, PartialEq, Eq, Debug)]
 struct PageRef {
     slug: String,
-    id: u64,
     title: String,
+    id: Option<u64>,
 }
 
 #[derive(Error, Debug)]
@@ -216,39 +238,58 @@ enum ReadErrorKind {
     NoPageId,
     #[error("a page was found, but not its title")]
     NoPageTitle,
+    #[error("page exists with a different title than what was mentioned")]
+    DifferentTitle,
 }
 
 #[instrument(err, skip(agent, page_slugs))]
 fn check_existence(
     agent: &Agent,
     site: &str,
-    page_slugs: HashSet<String>,
+    page_slugs: &[SlugParseResult],
 ) -> crate::Result<PageExistenceBins> {
     let mut existent = HashSet::new();
     let mut nonexistent = HashSet::new();
 
-    for slug in page_slugs.into_iter().progress_with_style(
+    for slug_parse_result in page_slugs.iter().progress_with_style(
         ProgressStyle::with_template("Checking which pages exist {wide_bar} {pos}/{len}")
             .expect("the progress bar template should be valid"),
     ) {
+        let SlugParseResult {
+            normalized,
+            encountered,
+        } = slug_parse_result;
         let response = agent
-            .get(format!("https://{}.wikidot.com/{}", site, slug))
+            .get(format!("https://{}.wikidot.com/{}", site, normalized))
             .call();
         if let Err(ureq::Error::StatusCode(404)) = response {
-            nonexistent.insert(slug);
+            nonexistent.insert(slug_parse_result.clone());
             continue;
         }
         let response = response?;
         match response.status() {
             StatusCode::OK => {
                 let html = &response.into_body().read_to_string()?;
-                let id = find_page_id_in_html(&slug, html)?;
-                let title = find_page_title_in_html(&slug, html)?;
-                existent.insert(PageRef { slug, id, title });
+                let title = find_page_title_in_html(normalized, html)?;
+
+                if normalized != encountered && title != *encountered {
+                    return Err(ReadError {
+                        slug: normalized.clone(),
+                        kind: ReadErrorKind::DifferentTitle,
+                    }
+                    .into());
+                }
+
+                let id = find_page_id_in_html(normalized, html)?;
+                existent.insert(PageRef {
+                    slug: normalized.clone(),
+                    title,
+                    id: Some(id),
+                });
             }
             code => {
                 return Err(ReadError {
-                    slug,
+                    slug: normalized.clone(),
                     kind: ReadErrorKind::UnexpectedStatus(code),
                 }
                 .into())
@@ -327,6 +368,10 @@ enum WriteErrorKind {
     Locked,
     #[error("page locked, but Wikidot responded with something unexpected that will not let us know who locked it: {0:?}")]
     UnidentifiedLockHolder(String),
+    #[error("page does not exist")]
+    Nonexistent,
+    #[error("page in an inconsistent state")]
+    InconsistentState,
 }
 
 #[instrument(err, skip(agent))]
@@ -344,7 +389,10 @@ fn move_page(agent: &Agent, site: &str, page: &PageRef, new_slug: &str) -> crate
         [
             ("action", "WikiPageAction"),
             ("event", "renamePage"),
-            ("page_id", &page.id.to_string()),
+            (
+                "page_id",
+                &page.id.ok_or(WriteErrorKind::Nonexistent)?.to_string(),
+            ),
             ("new_name", new_slug),
         ],
     )?;
@@ -398,16 +446,24 @@ fn set_contents(
 ) -> crate::Result<()> {
     let lock = try_lock(agent, site, bot_username, &page.slug, forceful)?;
 
-    let page_id_str = page.id.to_string();
+    let id_strs = match (page.id, lock.revision_id) {
+        (Some(page_id), Some(rev_id)) => Some((page_id.to_string(), rev_id.to_string())),
+        (None, None) => None,
+        _ => {
+            return Err(WriteError {
+                slug: page.slug.clone(),
+                kind: WriteErrorKind::InconsistentState,
+            }
+            .into())
+        }
+    };
     let lock_id_str = lock.id.to_string();
-    let rev_id_str = lock.revision_id.map_or_default(|id| id.to_string());
 
     let mut params = vec![
         ("action", "WikiPageAction"),
         ("event", "savePage"),
         ("mode", "page"),
         ("wiki_page", &page.slug),
-        ("page_id", &page_id_str),
         ("lock_id", &lock_id_str),
         ("lock_secret", &lock.secret),
         ("source", new_contents),
@@ -415,8 +471,9 @@ fn set_contents(
         ("comments", comment),
     ];
 
-    if lock.revision_id.is_some() {
-        params.push(("revision_id", &rev_id_str));
+    if let Some((page_id_str, rev_id_str)) = &id_strs {
+        params.push(("page_id", page_id_str));
+        params.push(("revision_id", rev_id_str));
     }
 
     let response: WikidotResponse = module_request(agent, site, "Empty", params)?;
