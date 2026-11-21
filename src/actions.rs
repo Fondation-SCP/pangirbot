@@ -106,7 +106,7 @@ pub fn replace(
                 eprint!("No comment was provided. Provide one now (or press Enter to provide an empty comment): ");
                 stdin.read_line(&mut input)?;
             }
-            edit_options.comment = Some(input);
+            edit_options.comment = Some(input.trim().to_owned());
         }
 
         let mut prompt_msg = info_msg.clone();
@@ -135,10 +135,10 @@ pub fn replace(
         }
     }
 
-    let comment = edit_options.comment.unwrap_or_default();
-    if comment.is_empty() {
+    if edit_options.comment.as_deref().is_none_or(str::is_empty) {
         event!(Level::WARN, "running with no edition comment");
     }
+    let comment = edit_options.comment.unwrap_or_default();
 
     event!(Level::INFO, "{info_msg}");
 
