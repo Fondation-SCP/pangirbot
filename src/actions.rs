@@ -3,7 +3,7 @@ use std::{
     fmt::Debug,
     fs::{self, File},
     io::{BufRead, BufReader, IsTerminal},
-    path::Path,
+    path::PathBuf,
 };
 
 use indicatif::{ProgressIterator, ProgressStyle};
@@ -26,20 +26,39 @@ enum UserAborted {
     NoInteractiveTty,
 }
 
+#[derive(Debug)]
+pub struct ReplaceOptions {
+    page_list_file_path: PathBuf,
+    content_file_path: PathBuf,
+    discard_history: bool,
+}
+
+impl ReplaceOptions {
+    pub fn new(
+        page_list_file_path: PathBuf,
+        content_file_path: PathBuf,
+        discard_history: bool,
+    ) -> Self {
+        Self {
+            page_list_file_path,
+            content_file_path,
+            discard_history,
+        }
+    }
+}
+
 #[instrument(err, skip(agent))]
 pub fn replace(
     agent: &Agent,
     site: &str,
     bot_username: &str,
-    page_list_file_path: &Path,
-    content_file_path: &Path,
-    discard_history: bool,
+    options: ReplaceOptions,
     create: bool,
     forceful: bool,
     yes: bool,
 ) -> crate::Result<()> {
-    let page_slugs = slugs_from_file(page_list_file_path)?;
-    let contents = fs::read_to_string(content_file_path)?;
+    let page_slugs = slugs_from_file(&options.page_list_file_path)?;
+    let contents = fs::read_to_string(options.content_file_path)?;
 
     let PageExistenceBins {
         existent,
@@ -95,7 +114,7 @@ pub fn replace(
 
     event!(Level::INFO, "{info_msg}");
 
-    if discard_history {
+    if options.discard_history {
         for existent_page in existent {
             move_to_category(agent, site, &existent_page, "unlisted")?;
         }
@@ -118,7 +137,7 @@ pub fn replace(
 }
 
 #[instrument(err)]
-fn slugs_from_file(page_list_file_path: &Path) -> crate::Result<HashSet<String>> {
+fn slugs_from_file(page_list_file_path: &PathBuf) -> crate::Result<HashSet<String>> {
     let page_list_file = File::open(page_list_file_path)?;
     let page_list_file_reader = BufReader::new(page_list_file);
     let page_slugs: HashSet<String> = page_list_file_reader
