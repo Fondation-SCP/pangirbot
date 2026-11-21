@@ -66,7 +66,7 @@ impl ReplaceOptions {
     }
 }
 
-#[instrument(err, skip(agent))]
+#[instrument(err, skip(agent, edit_options, replace_options))]
 pub fn replace(
     agent: &Agent,
     site: &str,
@@ -188,7 +188,7 @@ struct SlugParseResult {
     encountered: String,
 }
 
-#[instrument(err)]
+#[instrument]
 fn slugs_from_file(page_list_file_path: &PathBuf) -> crate::Result<Vec<SlugParseResult>> {
     let page_list_file = File::open(page_list_file_path)?;
     let page_list_file_reader = BufReader::new(page_list_file);
@@ -446,7 +446,7 @@ struct PageLock {
     revision_id: Option<u64>,
 }
 
-#[instrument(err, skip(agent))]
+#[instrument(err, skip(agent, new_contents, comment))]
 fn set_contents(
     agent: &Agent,
     site: &str,
@@ -568,7 +568,7 @@ trait WikidotResponse: DeserializeOwned {
 #[error("Wikidot™")]
 struct WikidotError;
 
-#[instrument(err, skip(agent))]
+#[instrument(err, skip(agent, params))]
 fn module_request<I, K, V, R>(
     agent: &Agent,
     site: &str,
@@ -615,7 +615,7 @@ where
     }
 }
 
-#[instrument(err)]
+#[instrument(err, skip(html))]
 fn find_user_holding_lock(slug: &str, html: &str) -> crate::Result<String> {
     let error = WriteError {
         slug: slug.to_owned(),
