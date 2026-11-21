@@ -27,20 +27,38 @@ enum UserAborted {
 }
 
 #[derive(Debug)]
-pub struct ReplaceOptions {
+pub struct EditOptions {
     page_list_file_path: PathBuf,
+    create: bool,
+    forceful: bool,
+    comment: Option<String>,
+}
+
+impl EditOptions {
+    pub fn new(
+        page_list_file_path: PathBuf,
+        create: bool,
+        forceful: bool,
+        comment: Option<String>,
+    ) -> Self {
+        Self {
+            page_list_file_path,
+            create,
+            forceful,
+            comment,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ReplaceOptions {
     content_file_path: PathBuf,
     discard_history: bool,
 }
 
 impl ReplaceOptions {
-    pub fn new(
-        page_list_file_path: PathBuf,
-        content_file_path: PathBuf,
-        discard_history: bool,
-    ) -> Self {
+    pub fn new(content_file_path: PathBuf, discard_history: bool) -> Self {
         Self {
-            page_list_file_path,
             content_file_path,
             discard_history,
         }
@@ -52,20 +70,19 @@ pub fn replace(
     agent: &Agent,
     site: &str,
     bot_username: &str,
-    options: ReplaceOptions,
-    create: bool,
-    forceful: bool,
+    mut edit_options: EditOptions,
+    replace_options: ReplaceOptions,
     yes: bool,
 ) -> crate::Result<()> {
-    let page_slugs = slugs_from_file(&options.page_list_file_path)?;
-    let contents = fs::read_to_string(options.content_file_path)?;
+    let page_slugs = slugs_from_file(&edit_options.page_list_file_path)?;
+    let contents = fs::read_to_string(replace_options.content_file_path)?;
 
     let PageExistenceBins {
         existent,
         nonexistent,
     } = check_existence(agent, site, page_slugs)?;
 
-    let info_msg = if create && !nonexistent.is_empty() {
+    let info_msg = if edit_options.create && !nonexistent.is_empty() {
         format!(
             "this action will edit {} pages and create {} more",
             existent.len(),
@@ -82,11 +99,21 @@ pub fn replace(
     };
 
     if !yes {
+        if edit_options.comment.is_none() {
+            let mut stdin = std::io::stdin().lock();
+            let mut input = String::new();
+            if stdin.is_terminal() {
+                eprint!("No comment was provided. Provide one now (or press Enter to provide an empty comment): ");
+                stdin.read_line(&mut input)?;
+            }
+            edit_options.comment = Some(input);
+        }
+
         let mut prompt_msg = info_msg.clone();
         if let Some(first) = prompt_msg.get_mut(..1) {
             first.make_ascii_uppercase();
         }
-        prompt_msg += &(if !create && !nonexistent.is_empty() {
+        prompt_msg += &(if !edit_options.create && !nonexistent.is_empty() {
             ". Run this with the `--create` flag if you want to create them"
         } else {
             ""
@@ -94,27 +121,28 @@ pub fn replace(
         .to_owned()
             + ".\n\nRun this as is? [y/N]");
         eprint!("{}", prompt_msg);
-
-        let mut stdin = std::io::stdin().lock();
-        if stdin.is_terminal() {
-            let mut input = String::new();
-            stdin.read_line(&mut input)?;
-            if input.trim() != "y" {
-                return Err(UserAborted::Manually.into());
+        {
+            let mut stdin = std::io::stdin().lock();
+            if stdin.is_terminal() {
+                let mut input = String::new();
+                stdin.read_line(&mut input)?;
+                if input.trim() != "y" {
+                    return Err(UserAborted::Manually.into());
+                }
+            } else {
+                return Err(UserAborted::NoInteractiveTty.into());
             }
-        } else {
-            return Err(UserAborted::NoInteractiveTty.into());
         }
     }
 
-    // TODO:
-    // - have a "--message blablabla" option in the cli
-    // - if no message option and !yes, prompt the user
-    let comment = "";
+    let comment = edit_options.comment.unwrap_or_default();
+    if comment.is_empty() {
+        event!(Level::WARN, "running with no edition comment");
+    }
 
     event!(Level::INFO, "{info_msg}");
 
-    if options.discard_history {
+    if replace_options.discard_history {
         for existent_page in existent {
             move_to_category(agent, site, &existent_page, "unlisted")?;
         }
@@ -127,8 +155,8 @@ pub fn replace(
                 bot_username,
                 &existent_page,
                 &contents,
-                comment,
-                forceful,
+                &comment,
+                edit_options.forceful,
             )?;
         }
     }

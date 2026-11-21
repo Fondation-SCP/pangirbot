@@ -44,6 +44,8 @@ enum Action {
         /// Page edition locks will not be taken by force unless this flag is specified.
         #[arg(short, long)]
         forceful: bool,
+        #[arg(short, long)]
+        message: Option<String>,
     },
 }
 
@@ -87,13 +89,13 @@ fn main() -> Result<()> {
             discard_history,
             create,
             forceful,
+            message,
         } => actions::replace(
             &agent,
             &args.site,
             &username,
-            actions::ReplaceOptions::new(page_list_file, content_file, discard_history),
-            create,
-            forceful,
+            actions::EditOptions::new(page_list_file, create, forceful, message),
+            actions::ReplaceOptions::new(content_file, discard_history),
             args.yes,
         )?,
     }
