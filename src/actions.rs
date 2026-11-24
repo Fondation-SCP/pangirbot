@@ -231,7 +231,7 @@ enum ReadErrorKind {
     #[error("a page was found, but not its title")]
     NoPageTitle,
     #[error("a page was found, but not its tags")]
-    NoPageTags,
+    NoPageTags { html: String },
     #[error("one of the page's tags cannot be read correctly: {0:?}")]
     UnreadableTag(String),
     #[error("page exists with a different title than what was mentioned")]
@@ -337,7 +337,9 @@ fn find_page_title_in_html(slug: &str, html: &str) -> crate::Result<String> {
 fn find_page_tags_in_html(slug: &str, html: &str) -> crate::Result<Vec<String>> {
     let tag_error = ReadError {
         slug: slug.to_owned(),
-        kind: ReadErrorKind::NoPageTags,
+        kind: ReadErrorKind::NoPageTags {
+            html: html.to_owned(),
+        },
     };
     let marker = "<div class=\"page-tags\">\n                            <span>\n                                ";
     let mut start = match html.rfind(marker) {
