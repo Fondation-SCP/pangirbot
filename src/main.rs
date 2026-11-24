@@ -51,6 +51,7 @@ enum Action {
         /// The tag diff to be applied.
         diff_str: String,
     },
+    SelfRevert,
 }
 
 fn main() -> Result<()> {
@@ -106,6 +107,13 @@ fn main() -> Result<()> {
             &args.site,
             &args.page_list_file,
             &diff_str,
+            args.yes,
+        )?,
+        Action::SelfRevert => actions::self_revert(
+            &agent,
+            &args.site,
+            &username,
+            &args.page_list_file,
             args.yes,
         )?,
     }

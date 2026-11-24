@@ -8,6 +8,7 @@ use std::{
 };
 
 use indicatif::{ProgressIterator, ProgressStyle};
+use scraper::{Html, Selector};
 use serde::{de::DeserializeOwned, Deserialize};
 use thiserror::Error;
 use tracing::{event, instrument, Level};
@@ -236,6 +237,10 @@ enum ReadErrorKind {
     UnreadableTag(String),
     #[error("page exists with a different title than what was mentioned")]
     DifferentTitle,
+    #[error("a relevant revision was found, but not its numeric ID")]
+    NoRevisionId,
+    #[error("the ID of one of the page's revisions cannot be read correctly: {0:?}")]
+    UnreadableRevisionId(String),
 }
 
 #[instrument(err, skip(agent, site, page_slugs))]
@@ -853,6 +858,165 @@ fn apply_tag_diff(
     }
 
     event!(Level::INFO, "updated tags on page `{}`", page.slug);
+
+    Ok(())
+}
+
+#[instrument(err, skip(agent, site, bot_username))]
+pub fn self_revert(
+    agent: &Agent,
+    site: &str,
+    bot_username: &str,
+    page_list_file_path: &Path,
+    yes: bool,
+) -> crate::Result<()> {
+    let page_slugs = slugs_from_file(page_list_file_path)?;
+    let PageExistenceBins {
+        existent,
+        nonexistent,
+    } = check_existence(agent, site, &page_slugs)?;
+
+    let nonexistent_part = format!(
+        ". Among the mentioned pages, {} more do not exist yet, and will not be created",
+        nonexistent.len()
+    );
+    let info_msg = format!("this action will edit (at most) {} pages", existent.len())
+        + if !nonexistent.is_empty() {
+            &nonexistent_part
+        } else {
+            ""
+        };
+
+    if !yes {
+        prompt(info_msg.clone())?;
+    }
+    event!(Level::INFO, "{info_msg}");
+
+    for page in existent {
+        self_revert_on_page(agent, site, bot_username, &page)?;
+    }
+
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct HistoryResponse {
+    status: String,
+    body: String,
+}
+
+impl WikidotResponse for HistoryResponse {
+    fn status(&self) -> &str {
+        &self.status
+    }
+}
+
+#[instrument(err, skip(agent, site, bot_username))]
+fn self_revert_on_page(
+    agent: &Agent,
+    site: &str,
+    bot_username: &str,
+    page: &PageRef,
+) -> crate::Result<()> {
+    let page_id_str = match &page.details {
+        None => {
+            return Err(WriteError {
+                slug: page.slug.clone(),
+                kind: WriteErrorKind::Nonexistent,
+            }
+            .into())
+        }
+        Some(details) => details.id,
+    }
+    .to_string();
+
+    let history_response: HistoryResponse = module_request(
+        agent,
+        site,
+        "history/PageRevisionListModule",
+        [
+            ("pageId", &page_id_str),
+            ("page", &"1".to_owned()),
+            ("perpage", &"99999".to_owned()),
+        ],
+    )?;
+
+    let history_response_body = Html::parse_document(&history_response.body);
+    let rev_selector = Selector::parse("table.page-history tr")
+        .expect("the revision history table row CSS selector should be valid");
+
+    let author_selector = Selector::parse("span.printuser.avatarhover a")
+        .expect("the revision author CSS selector should be valid");
+    let mut revisions = history_response_body.select(&rev_selector);
+    let idx_last_revision_by_self = revisions.position(|row| {
+        row.select(&author_selector)
+            .nth(1)
+            .is_some_and(|a| a.text().collect::<String>() == bot_username)
+    });
+
+    match idx_last_revision_by_self {
+        None => {
+            event!(
+                Level::INFO,
+                "no revision was made by this account on page `{}`",
+                page.slug
+            );
+            return Ok(());
+        }
+        Some(_) => match revisions.next() {
+            None => {
+                event!(
+                    Level::INFO,
+                    "there is no older revision to go back to on page `{}`",
+                    page.slug
+                );
+            }
+            Some(revision_tr) => {
+                let rev_tr_html_id = revision_tr.attr("id").ok_or(ReadError {
+                    slug: page.slug.clone(),
+                    kind: ReadErrorKind::NoRevisionId,
+                })?;
+                let rev_id_str = rev_tr_html_id
+                    .strip_prefix("revision-row-")
+                    .ok_or(ReadError {
+                        slug: page.slug.clone(),
+                        kind: ReadErrorKind::UnreadableRevisionId(rev_tr_html_id.to_owned()),
+                    })?;
+
+                let revert_response: BaseResponse = module_request(
+                    agent,
+                    site,
+                    "Empty",
+                    [
+                        ("action", "WikiPageAction"),
+                        ("event", "revert"),
+                        ("page_id", &page_id_str),
+                        ("revisionId", rev_id_str),
+                    ],
+                )?;
+
+                if revert_response.status == "no_permission" {
+                    return Err(WriteError {
+                        slug: page.slug.clone(),
+                        kind: WriteErrorKind::NoPermission,
+                    }
+                    .into());
+                } else if revert_response.status != "ok" {
+                    return Err(WriteError {
+                        slug: page.slug.clone(),
+                        kind: WriteErrorKind::UnexpectedResponse(Box::new(revert_response)),
+                    }
+                    .into());
+                }
+
+                event!(
+                    Level::INFO,
+                    "reverted the last revision made by this account to page `{}`",
+                    page.slug
+                );
+            }
+        },
+    }
 
     Ok(())
 }
