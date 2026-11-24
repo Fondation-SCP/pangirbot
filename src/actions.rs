@@ -785,5 +785,72 @@ fn apply_tag_diff(
     page: &PageRef,
     diff: &HashSet<TagEdit>,
 ) -> crate::Result<()> {
-    todo!("apply tag diff")
+    let (mut tags, page_id) = match &page.details {
+        None => {
+            return Err(WriteError {
+                slug: page.slug.clone(),
+                kind: WriteErrorKind::Nonexistent,
+            }
+            .into())
+        }
+        Some(details) => (details.tags.clone(), details.id),
+    };
+
+    for TagEdit { op, tag } in diff {
+        match op {
+            TagOp::Add => {
+                if tags.contains(tag) {
+                    event!(
+                        Level::INFO,
+                        "page `{}` already has the tag `{}`. It will not be added",
+                        page.slug,
+                        tag
+                    );
+                } else {
+                    tags.push(tag.clone());
+                }
+            }
+            TagOp::Remove => match tags.iter().position(|t| t == tag) {
+                None => event!(
+                    Level::INFO,
+                    "page `{}` does not have the tag `{}`, so it cannot be removed",
+                    page.slug,
+                    tag
+                ),
+                Some(index) => {
+                    tags.remove(index);
+                }
+            },
+        }
+    }
+
+    let response: BaseResponse = module_request(
+        agent,
+        site,
+        "Empty",
+        [
+            ("action", "WikiPageAction"),
+            ("event", "saveTags"),
+            ("tags", &tags.join(" ")),
+            ("pageId", &page_id.to_string()),
+        ],
+    )?;
+
+    if response.status == "no_permission" {
+        return Err(WriteError {
+            slug: page.slug.clone(),
+            kind: WriteErrorKind::NoPermission,
+        }
+        .into());
+    } else if response.status != "ok" {
+        return Err(WriteError {
+            slug: page.slug.clone(),
+            kind: WriteErrorKind::UnexpectedResponse(Box::new(response)),
+        }
+        .into());
+    }
+
+    event!(Level::INFO, "updated tags on page `{}`", page.slug);
+
+    Ok(())
 }
