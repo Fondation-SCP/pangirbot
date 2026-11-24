@@ -230,6 +230,10 @@ enum ReadErrorKind {
     NoPageId,
     #[error("a page was found, but not its title")]
     NoPageTitle,
+    #[error("a page was found, but not its tags")]
+    NoPageTags,
+    #[error("one of the page's tags cannot be read correctly: {0:?}")]
+    UnreadableTag(String),
     #[error("page exists with a different title than what was mentioned")]
     DifferentTitle,
 }
@@ -331,7 +335,38 @@ fn find_page_title_in_html(slug: &str, html: &str) -> crate::Result<String> {
 }
 
 fn find_page_tags_in_html(slug: &str, html: &str) -> crate::Result<Vec<String>> {
-    todo!("find page tags")
+    let tag_error = ReadError {
+        slug: slug.to_owned(),
+        kind: ReadErrorKind::NoPageTags,
+    };
+    let marker = "<div class=\"page-tags\">\n                            <span>\n                                ";
+    let mut start = match html.rfind(marker) {
+        Some(start) => start,
+        None => return Err(tag_error.into()),
+    } + marker.len();
+    let end = start + html[start..].find("\n").ok_or(tag_error)?;
+    let mut tags = Vec::new();
+    while start < end {
+        let tag_start = html[start..end].find(">").map(|idx| start + idx + 1);
+        let tag = match tag_start {
+            None => break,
+            Some(tag_start) => match html[tag_start..end].find("</a>").map(|idx| tag_start + idx) {
+                None => {
+                    return Err(ReadError {
+                        slug: slug.to_owned(),
+                        kind: ReadErrorKind::UnreadableTag(html[tag_start..end].to_owned()),
+                    }
+                    .into())
+                }
+                Some(tag_end) => {
+                    start = tag_end + "</a>".len();
+                    html[tag_start..tag_end].to_owned()
+                }
+            },
+        };
+        tags.push(tag);
+    }
+    Ok(tags)
 }
 
 fn move_to_category(
