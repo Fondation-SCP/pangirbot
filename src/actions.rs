@@ -935,7 +935,7 @@ fn self_revert_on_page(
         site,
         "history/PageRevisionListModule",
         [
-            ("pageId", &page_id_str),
+            ("page_id", &page_id_str),
             ("page", &"1".to_owned()),
             ("perpage", &"99999".to_owned()),
         ],
@@ -990,7 +990,7 @@ fn self_revert_on_page(
                     [
                         ("action", "WikiPageAction"),
                         ("event", "revert"),
-                        ("page_id", &page_id_str),
+                        ("pageId", &page_id_str),
                         ("revisionId", rev_id_str),
                     ],
                 )?;
