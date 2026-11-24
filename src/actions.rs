@@ -742,11 +742,15 @@ enum TagDiffParseError {
     UnrecognizedOp,
     #[error("consecutive separators in the tag diff string")]
     ConsecutiveSeparators,
+    #[error("the tag `{0:?}` appears more than once in the tag diff string")]
+    DuplicateTag(String),
 }
 
 #[instrument(err)]
 fn parse_tag_diff(diff_str: &str) -> crate::Result<HashSet<TagEdit>> {
     let mut diff = HashSet::new();
+    let mut tags_in_diff = HashSet::new();
+
     for part_str in diff_str.trim().split(",") {
         let part = match part_str
             .chars()
@@ -764,6 +768,10 @@ fn parse_tag_diff(diff_str: &str) -> crate::Result<HashSet<TagEdit>> {
             _ => return Err(TagDiffParseError::UnrecognizedOp.into()),
         };
 
+        if tags_in_diff.contains(&part.tag) {
+            return Err(TagDiffParseError::DuplicateTag(part.tag).into());
+        }
+        tags_in_diff.insert(part.tag.clone());
         diff.insert(part);
     }
 
