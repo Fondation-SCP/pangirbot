@@ -114,26 +114,11 @@ pub fn replace(
         if let Some(first) = prompt_msg.get_mut(..1) {
             first.make_ascii_uppercase();
         }
-        prompt_msg += &(if !edit_options.create && !nonexistent.is_empty() {
-            ". Run this with the `--create` flag if you want to create them"
-        } else {
-            ""
+
+        if !edit_options.create && !nonexistent.is_empty() {
+            prompt_msg += ". Run this with the `--create` flag if you want to create them";
         }
-        .to_owned()
-            + ".\n\nRun this as is? [y/N]");
-        eprint!("{}", prompt_msg);
-        {
-            let mut stdin = std::io::stdin().lock();
-            if stdin.is_terminal() {
-                let mut input = String::new();
-                stdin.read_line(&mut input)?;
-                if input.trim() != "y" {
-                    return Err(UserAborted::Manually.into());
-                }
-            } else {
-                return Err(UserAborted::NoInteractiveTty.into());
-            }
-        }
+        prompt(prompt_msg)?;
     }
 
     if edit_options.comment.as_deref().is_none_or(str::is_empty) {
@@ -639,4 +624,21 @@ pub fn tag(
     yes: bool,
 ) -> crate::Result<()> {
     todo!("tag")
+}
+
+#[instrument(err, skip_all)]
+fn prompt(prompt_msg: String) -> crate::Result<()> {
+    eprint!("{}", prompt_msg + ".\n\nRun this as is? [y/N]");
+
+    let mut stdin = std::io::stdin().lock();
+    if stdin.is_terminal() {
+        let mut input = String::new();
+        stdin.read_line(&mut input)?;
+        if input.trim() != "y" {
+            return Err(UserAborted::Manually.into());
+        }
+    } else {
+        return Err(UserAborted::NoInteractiveTty.into());
+    }
+    Ok(())
 }
