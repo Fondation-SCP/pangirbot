@@ -335,18 +335,18 @@ fn find_page_title_in_html(slug: &str, html: &str) -> crate::Result<String> {
 }
 
 fn find_page_tags_in_html(slug: &str, html: &str) -> crate::Result<Vec<String>> {
-    let tag_error = ReadError {
-        slug: slug.to_owned(),
-        kind: ReadErrorKind::NoPageTags {
-            html: html.to_owned(),
-        },
-    };
     let marker = "<div class=\"page-tags\">\n                            <span>\n                                ";
     let mut start = match html.rfind(marker) {
         Some(start) => start,
-        None => return Err(tag_error.into()),
+        None => return Ok(vec![]),
     } + marker.len();
-    let end = start + html[start..].find("\n").ok_or(tag_error)?;
+    let end = start
+        + html[start..].find("\n").ok_or(ReadError {
+            slug: slug.to_owned(),
+            kind: ReadErrorKind::NoPageTags {
+                html: html.to_owned(),
+            },
+        })?;
     let mut tags = Vec::new();
     while start < end {
         let tag_start = html[start..end].find(">").map(|idx| start + idx + 1);
