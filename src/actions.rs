@@ -66,7 +66,7 @@ impl ReplaceOptions {
     }
 }
 
-#[instrument(err, skip(agent, edit_options, replace_options))]
+#[instrument(err, skip(agent, site, bot_username, edit_options, replace_options))]
 pub fn replace(
     agent: &Agent,
     site: &str,
@@ -238,7 +238,7 @@ enum ReadErrorKind {
     DifferentTitle,
 }
 
-#[instrument(err, skip(agent, page_slugs))]
+#[instrument(err, skip(agent, site, page_slugs))]
 fn check_existence(
     agent: &Agent,
     site: &str,
@@ -412,7 +412,7 @@ enum WriteErrorKind {
     InconsistentState,
 }
 
-#[instrument(err, skip(agent))]
+#[instrument(err, skip(agent, site))]
 fn move_page(agent: &Agent, site: &str, page: &PageRef, new_slug: &str) -> crate::Result<()> {
     let mut normalized_new_slug = new_slug.to_owned();
     wikidot_normalize::normalize(&mut normalized_new_slug);
@@ -482,7 +482,7 @@ struct PageLock {
     revision_id: Option<u64>,
 }
 
-#[instrument(err, skip(agent, new_contents, comment))]
+#[instrument(err, skip(agent, site, bot_username, new_contents, comment))]
 fn set_contents(
     agent: &Agent,
     site: &str,
@@ -547,7 +547,7 @@ fn set_contents(
     Ok(())
 }
 
-#[instrument(err, skip(agent))]
+#[instrument(err, skip(agent, site, bot_username))]
 fn try_lock(
     agent: &Agent,
     site: &str,
@@ -606,7 +606,7 @@ trait WikidotResponse: DeserializeOwned {
 #[error("Wikidot™")]
 struct WikidotError;
 
-#[instrument(err, skip(agent, params))]
+#[instrument(err, skip(agent, site, params))]
 fn module_request<I, K, V, R>(
     agent: &Agent,
     site: &str,
@@ -778,7 +778,7 @@ fn parse_tag_diff(diff_str: &str) -> crate::Result<HashSet<TagEdit>> {
     Ok(diff)
 }
 
-#[instrument(err, skip(agent, diff))]
+#[instrument(err, skip(agent, site, diff))]
 fn apply_tag_diff(
     agent: &Agent,
     site: &str,
