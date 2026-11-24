@@ -174,7 +174,7 @@ struct SlugParseResult {
 }
 
 #[instrument]
-fn slugs_from_file(page_list_file_path: &PathBuf) -> crate::Result<Vec<SlugParseResult>> {
+fn slugs_from_file(page_list_file_path: &Path) -> crate::Result<Vec<SlugParseResult>> {
     let page_list_file = File::open(page_list_file_path)?;
     let page_list_file_reader = BufReader::new(page_list_file);
     let page_slugs: Vec<_> = page_list_file_reader
@@ -676,7 +676,35 @@ pub fn tag(
     diff_str: &str,
     yes: bool,
 ) -> crate::Result<()> {
-    todo!("tag")
+    let page_slugs = slugs_from_file(page_list_file_path)?;
+
+    let PageExistenceBins {
+        existent,
+        nonexistent,
+    } = check_existence(agent, site, &page_slugs)?;
+
+    let diff = parse_tag_diff(diff_str)?;
+
+    let nonexistent_part = format!(
+        ". Among the mentioned pages, {} more do not exist yet, and will not be created",
+        nonexistent.len()
+    );
+    let info_msg = format!("this action will edit {} pages", existent.len())
+        + if !nonexistent.is_empty() {
+            &nonexistent_part
+        } else {
+            ""
+        };
+
+    if !yes {
+        prompt(info_msg.clone())?;
+    }
+    event!(Level::INFO, "{info_msg}");
+
+    for page in existent {
+        apply_tag_diff(agent, site, &page, &diff)?;
+    }
+    Ok(())
 }
 
 #[instrument(err, skip_all)]
@@ -694,4 +722,60 @@ fn prompt(prompt_msg: String) -> crate::Result<()> {
         return Err(UserAborted::NoInteractiveTty.into());
     }
     Ok(())
+}
+
+#[derive(PartialEq, Eq, Hash, Debug)]
+enum TagOp {
+    Add,
+    Remove,
+}
+
+#[derive(PartialEq, Eq, Hash, Debug)]
+struct TagEdit {
+    op: TagOp,
+    tag: String,
+}
+
+#[derive(Error, Debug)]
+enum TagDiffParseError {
+    #[error("unrecognized tag operation")]
+    UnrecognizedOp,
+    #[error("consecutive separators in the tag diff string")]
+    ConsecutiveSeparators,
+}
+
+#[instrument(err)]
+fn parse_tag_diff(diff_str: &str) -> crate::Result<HashSet<TagEdit>> {
+    let mut diff = HashSet::new();
+    for part_str in diff_str.trim().split(",") {
+        let part = match part_str
+            .chars()
+            .nth(0)
+            .ok_or(TagDiffParseError::ConsecutiveSeparators)?
+        {
+            '+' => TagEdit {
+                op: TagOp::Add,
+                tag: part_str[1..].to_owned(),
+            },
+            '-' => TagEdit {
+                op: TagOp::Remove,
+                tag: part_str[1..].to_owned(),
+            },
+            _ => return Err(TagDiffParseError::UnrecognizedOp.into()),
+        };
+
+        diff.insert(part);
+    }
+
+    Ok(diff)
+}
+
+#[instrument(err, skip(agent, diff))]
+fn apply_tag_diff(
+    agent: &Agent,
+    site: &str,
+    page: &PageRef,
+    diff: &HashSet<TagEdit>,
+) -> crate::Result<()> {
+    todo!("apply tag diff")
 }
