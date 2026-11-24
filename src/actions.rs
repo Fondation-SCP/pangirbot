@@ -155,7 +155,7 @@ pub fn replace(
                 &PageRef {
                     slug: normalized,
                     title: encountered,
-                    id: None,
+                    details: None,
                 },
                 &contents,
                 &comment,
@@ -206,7 +206,13 @@ struct PageExistenceBins {
 struct PageRef {
     slug: String,
     title: String,
-    id: Option<u64>,
+    details: Option<PageDetails>,
+}
+
+#[derive(Hash, PartialEq, Eq, Debug)]
+struct PageDetails {
+    id: u64,
+    tags: Vec<String>,
 }
 
 #[derive(Error, Debug)]
@@ -267,10 +273,11 @@ fn check_existence(
                 }
 
                 let id = find_page_id_in_html(normalized, html)?;
+                let tags = find_page_tags_in_html(normalized, html)?;
                 existent.insert(PageRef {
                     slug: normalized.clone(),
                     title,
-                    id: Some(id),
+                    details: Some(PageDetails { id, tags }),
                 });
             }
             code => {
@@ -321,6 +328,10 @@ fn find_page_title_in_html(slug: &str, html: &str) -> crate::Result<String> {
         })?
         .parse()
         .map_err(Into::into)
+}
+
+fn find_page_tags_in_html(slug: &str, html: &str) -> crate::Result<Vec<String>> {
+    todo!("find page tags")
 }
 
 fn move_to_category(
@@ -383,7 +394,12 @@ fn move_page(agent: &Agent, site: &str, page: &PageRef, new_slug: &str) -> crate
             ("event", "renamePage"),
             (
                 "page_id",
-                &page.id.ok_or(WriteErrorKind::Nonexistent)?.to_string(),
+                &page
+                    .details
+                    .as_ref()
+                    .ok_or(WriteErrorKind::Nonexistent)?
+                    .id
+                    .to_string(),
             ),
             ("new_name", new_slug),
         ],
@@ -443,8 +459,10 @@ fn set_contents(
 ) -> crate::Result<()> {
     let lock = try_lock(agent, site, bot_username, &page.slug, forceful)?;
 
-    let id_strs = match (page.id, lock.revision_id) {
-        (Some(page_id), Some(rev_id)) => Some((page_id.to_string(), rev_id.to_string())),
+    let id_strs = match (&page.details, lock.revision_id) {
+        (Some(PageDetails { id: page_id, .. }), Some(rev_id)) => {
+            Some((page_id.to_string(), rev_id.to_string()))
+        }
         (None, None) => None,
         _ => {
             return Err(WriteError {
